@@ -1,0 +1,341 @@
+// Load Wi-Fi library
+#include <WiFi.h>
+
+// Replace with your network credentials
+const char* ssid = "DeVryStudent";
+const char* password = "Student123";
+
+// Set web server port number to 80
+WiFiServer server(80);
+
+// Variable to store the HTTP request
+String header;
+
+//Server connection timeout variables
+// Current time
+unsigned long currentTime = millis();
+// Previous time
+unsigned long previousTime = 0; 
+// Define timeout time in milliseconds (example: 2000ms = 2s)
+const long timeoutTime = 400;
+
+char pressedButton = 'v'; // use 'f' - forward, 'b' - back or reverse, 'l' - left, 'r' - right, 'p' pause, 'g' - go, 'v' void
+
+
+const int Trig =2 ;//2;// GIOP2, Trigger pin for the Ultrasonic Range sensor
+const int Echo =4 ;// 4;//GIOP4 Echo pin for the ultrasonic Range sensor
+const byte stby = 25; //Control Enable. The H-bridge have only one enable pin which prevent enable to be use as PWM. Separate control for left and right cannot be achieved.
+const byte ain2 = 32; //This is the second pin for Motor 1. Motor 1 is the right motor
+const byte ain1 = 33; //First pin for the motor 1
+const byte bin1 = 26; //First pin for the left motor
+const byte bin2 = 27; //Second pin for the left motor.
+const uint8_t md1_ain2 = 0; //channels to be associated with the pins
+const uint8_t md1_ain1 = 1; //These will be used to actually control the motors
+const uint8_t md2_bin1 = 2;
+const uint8_t md2_bin2 = 3;
+//Motor control variables. PWD duty cycle is from 0% to 100%. 
+//The motors have minimum PWD duty cycle to operate
+int frequency = 250;
+byte minMd = 96, maxMD=255;
+int leftRate = 0, rightRate = 0;
+const int SIZE = 21;//this is the size of the array of speeds.
+int motorSpeeds[] = {-16,-12,-8,-4,0,4,8,12,16,40,24,28,32,36,40,44,48,52,56,60,64};
+const int noMotion = 4;//index where the motor does not move
+int leftSelector = noMotion, rightSelector =noMotion;
+String statusString = "";//use to communicate status on the web
+void setup() {
+  Serial.begin(115200);
+  pinMode(stby, OUTPUT);//Configure Stand by 
+  digitalWrite(stby, LOW);
+  pinMode(Trig, OUTPUT);
+  pinMode(Echo, INPUT); 
+  analogReadResolution(8);
+
+  ledcAttachPin(ain2, md1_ain2);//Associates the 
+  ledcAttachPin(ain1, md1_ain1);
+  ledcAttachPin(bin1, md2_bin1);
+  ledcAttachPin(bin2, md2_bin2);
+
+  ledcSetup(md1_ain2, frequency, 8);//250 is the frequency of the PWM. 8 is the bit resolution
+  ledcSetup(md1_ain1, frequency, 8);
+  ledcSetup(md2_bin1, frequency, 8);
+  ledcSetup(md2_bin2, frequency, 8);
+
+  //Initialization of the Web Server
+  inititWifiAndServer();
+
+}
+
+double inches;
+bool contRunning = false; // variable controlling the Enable
+bool danger = true;// variable related to Distance sensor
+
+
+
+void loop() {
+
+    pressedButton = getPressedButton();//Check if the webserver has button pressed.
+    inches = rdDistanceSensor(Trig, Echo);
+    
+    if (inches < 0) {
+      danger = true;
+    }
+    else if(inches > 0){
+      danger = false; 
+    }
+
+    switch (pressedButton){ // use 'f' - forward, 'b' - back or reverse, 'l' - left, 'r' - right, 'p' pause, 'g' - go,'s'-stop, 'v' - void 
+      case 'f':{
+        leftRate = rateUP(leftSelector); // This updates selector too  
+        rightRate = rateUP(rightSelector);
+      }     
+      break;
+      case 'b':{
+        leftRate = rateDown(leftSelector); // This updates selector too  
+        rightRate = rateDown(rightSelector);
+      }     
+      break;
+      case 'l':{
+        leftRate = rateDown(leftSelector); // This updates selector too  
+        rightRate = rateUP(rightSelector);
+      }     
+      break;
+      case 'r':{
+        leftRate = rateUP(leftSelector); // This updates selector too  
+        rightRate = rateDown(rightSelector);
+      }     
+      break;
+      case 'p':{
+        contRunning = false;
+      }     
+      break;
+      case 'g':{
+        contRunning = true;
+      }     
+      break;
+      case 's':{
+        leftRate = stopCar(leftSelector);
+        rightRate = stopCar(rightSelector);
+      }     
+      break;
+      
+
+      case 'v': // void case do nothing the same as default
+      default:
+      break;
+    }
+
+    inches = rdDistanceSensor(Trig, Echo);
+    
+    if ( inches > .2 && inches < 4) {
+      danger = true;
+    }
+    else if(inches > 0){
+      danger = false; 
+    }
+
+    if (danger){
+      if (leftRate > 0){
+        leftRate = stopCar(leftSelector);
+      }
+      if (rightRate > 0){
+        rightRate = stopCar(rightSelector); 
+      }
+    }
+  
+
+    if (rightRate == 0){
+      ledcWrite(md1_ain2, 0);
+      ledcWrite(md1_ain1, 0); //Setting the 
+    } else if(rightRate > 0){
+      ledcWrite(md1_ain2, 0);
+      ledcWrite(md1_ain1, minMd+(byte) rightRate); 
+    } else {
+      ledcWrite(md1_ain2, minMd+ (byte)(-rightRate));
+      ledcWrite(md1_ain1, 0);
+    }
+    if (leftRate == 0){ 
+       ledcWrite(md2_bin2, 0);
+       ledcWrite(md2_bin1, 0); 
+    }else if(leftRate > 0){
+       ledcWrite(md2_bin2, 0);
+       ledcWrite(md2_bin1, minMd+(byte) leftRate);
+    }else {
+      ledcWrite(md2_bin2, minMd + (byte)-leftRate);
+      ledcWrite(md2_bin1, 0);
+    }
+  if(contRunning)
+    digitalWrite(stby, HIGH);
+  else
+    digitalWrite(stby, LOW);
+    statusString = "L: " + String(leftRate) + " R: " + String(rightRate) + " CR: " + String(contRunning)+ " IN: " +
+    String(inches);
+    //Serial.println(statusString);
+
+
+//  while(1){
+//    inches = rdDistanceSensor(Trig, Echo);
+ //   Serial.print(String(inches,2));
+    //Serial.println(" in, ");
+//    Serial.println("");
+ //   Serial.println(analogRead(analoginput));
+    delay(10);
+//  }
+}
+//Use the ultrasonic sensor to detect distance.
+double rdDistanceSensor(int Trig, int Echo){
+      long duration;
+      digitalWrite(Trig, LOW);  // Drive the trigger (pin 7) low
+      delayMicroseconds(2);   // Keep the trigger pin low for 2 microseconds
+      digitalWrite(Trig, HIGH);  // Drive the trigger pin high. This will force the Ping sensor to send
+                                             // an ultrasonic burst
+      delayMicroseconds(5);     // Wait 5 microseconds
+      digitalWrite(Trig, LOW);   // Drive the trigger pin low. This stops the ultrasonic burst
+ 
+      duration = pulseIn(Echo, HIGH,10000);  // Read the length of the pulse from the Ping sensor
+//      Serial.println(duration);
+      return (double) duration /74. /2. ; // Convert duration to distance in inches
+      
+}
+
+void inititWifiAndServer(){
+   // Connect to Wi-Fi network with SSID and password
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { //WL_CONNECTED is = 3 
+    delay(500);
+    Serial.print(".");
+  }
+  // Print local IP address and start web server
+  Serial.println("");
+  Serial.println("WiFi connected.");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+  server.begin();
+}
+
+int rateUP(int &selector){
+  selector++;
+      if(selector >= SIZE)
+          selector = SIZE - 1;
+  return motorSpeeds[selector]; 
+}
+
+int rateDown(int &selector){
+  selector--;
+      if(selector < 0)
+          selector = 0;
+  return motorSpeeds[selector]; 
+}
+
+int stopCar(int &selector){// this is executed when stop button is pressed to set the motors to zero.
+  selector = noMotion;
+  return motorSpeeds[selector];
+}
+
+char getPressedButton(){
+  
+  WiFiClient client = server.available();   // Listen for incoming clients
+  char buttonValue = 'v';
+  if (client) {                             // If a new client connects,
+    currentTime = millis();
+    previousTime = currentTime;
+    Serial.println("New Client.");          // print a message out in the serial port
+    String currentLine = "";                // make a String to hold incoming data from the client
+    while (client.connected() && currentTime - previousTime <= timeoutTime) {  // loop while the client's connected
+      
+      currentTime = millis();
+      if (client.available()) {             // if there's bytes to read from the client,
+        char c = client.read();             // read a byte, then
+        Serial.write(c);                    // print it out the serial monitor
+        header += c;
+        if (c == '\n') {                    // if the byte is a newline character
+          // if the current line is blank, you got two newline characters in a row.
+          // that's the end of the client HTTP request, so send a response:
+          if (currentLine.length() == 0) {
+            // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
+            // and a content-type so the client knows what's coming, then a blank line:
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-type:text/html");
+            client.println("Connection: close");
+            client.println();
+            
+            // use 'f' - forward, 'b' - back or reverse, 'l' - left, 'r' - right, 'p' pause, 'g' - go,'s'-stop, 'v' - void
+            if (header.indexOf("GET /f") >= 0) {
+              Serial.println("Forward");
+              buttonValue = 'f';
+            } else if (header.indexOf("GET /b") >= 0) {
+              Serial.println("Reverse");
+              buttonValue = 'b';
+            } else if (header.indexOf("GET /l") >= 0) {
+              Serial.println("Left");
+              buttonValue = 'l';
+            } else if (header.indexOf("GET /r") >= 0) {
+              Serial.println("Right");
+              buttonValue = 'r';
+            } else if (header.indexOf("GET /p") >= 0) {
+              Serial.println("Pause");
+              buttonValue = 'p';
+            } else if (header.indexOf("GET /g") >= 0) {
+              Serial.println("Go");
+              buttonValue = 'g';
+            } else if (header.indexOf("GET /s") >= 0) {
+              Serial.println("Stop");
+              buttonValue = 's';
+            }
+            
+            // Display the HTML web page
+            client.println("<!DOCTYPE html><html>");
+            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+            client.println("<link rel=\"icon\" href=\"data:,\">");
+            // CSS to style the on/off buttons 
+            // Feel free to change the background-color and font-size attributes to fit your preferences
+            client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}");
+            client.println(".button { background-color: #4CAF50; border: none; color: white; padding: 12px 36px;");
+            client.println("text-decoration: none; font-size: 18px; margin: 2px; cursor: pointer;}");
+            client.println(".button2 {background-color: #555555;}</style></head>");
+            
+            // Web Page Heading
+            client.println("<body><h1>ESP32 Car CTRL</h1>");
+            //statusString
+            //client.println("<body><a>"+statusString+"</a>");
+            
+              // use 'f' - forward, 'b' - back or reverse, 'l' - left, 'r' - right, 'p' pause, 'g' - go,'s'-stop, 'v' - void      
+              client.print("<p><a href=\"/s\"><button class=\"button\"> STOP</button></a>");
+              client.println("<a href=\"/p\"><button class=\"button\"> PAUSE</button></a></p>");
+
+              client.println("<p><a href=\"/f\"><button class=\"button\"> Forward</button></a></p>");
+              
+              client.print("<p><a href=\"/l\"><button class=\"button\">LEFT</button></a>");
+              client.println("<a href=\"/r\"><button class=\"button\">RIGHT</button></a></p>");
+
+              client.println("<p><a href=\"/b\"><button class=\"button\"> Back </button></a></p>");
+              client.println("<p><a href=\"/g\"><button class=\"button\"> Go </button></a></p>");
+              
+   
+            client.println("</body></html>");
+            
+            // The HTTP response ends with another blank line
+            client.println();
+            // Break out of the while loop
+            break;
+          } else { // if you got a newline, then clear currentLine
+            currentLine = "";
+          }
+        } else if (c != '\r') {  // if you got anything else but a carriage return character,
+          currentLine += c;      // add it to the end of the currentLine
+        }
+      }
+    }
+    // Clear the header variable
+    header = "";
+    // Close the connection
+    client.stop();
+    //delay(250);
+    Serial.println("Client disconnected.");
+    Serial.println("");
+  }
+  
+  return buttonValue;
+}
